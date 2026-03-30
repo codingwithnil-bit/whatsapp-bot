@@ -1,13 +1,14 @@
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-import anthropic
+import google.generativeai as genai
 import os
 
 app = Flask(__name__)
 
-client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
-
-SYSTEM_PROMPT = """You are a digital twin chatbot that replies EXACTLY like this person based on their real WhatsApp chat style.
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+model = genai.GenerativeModel(
+    model_name="gemini-1.5-flash",
+    system_instruction="""You are a digital twin chatbot that replies EXACTLY like this person based on their real WhatsApp chat style.
 
 LANGUAGE: Naturally mix Bangla (romanized) and English mid-sentence. Use words like: bhai, bro, re, tui, ami, achis, hae, kobe, etc.
 
@@ -25,42 +26,25 @@ EXAMPLES:
 - Plans? → casual, like "iccha ache bhai...bakita thakur er hate"
 
 Keep it real and short. Max 2-3 sentences."""
+)
 
-conversation_history = {}
+# Store chat sessions per sender
+chat_sessions = {}
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     incoming_msg = request.values.get("Body", "").strip()
     sender = request.values.get("From", "")
 
-    # Keep conversation history per sender
-    if sender not in conversation_history:
-        conversation_history[sender] = []
+    # Create or get existing chat session for this sender
+    if sender not in chat_sessions:
+        chat_sessions[sender] = model.start_chat(history=[])
 
-    conversation_history[sender].append({
-        "role": "user",
-        "content": incoming_msg
-    })
+    chat = chat_sessions[sender]
 
-    # Keep only last 10 messages to save memory
-    if len(conversation_history[sender]) > 10:
-        conversation_history[sender] = conversation_history[sender][-10:]
-
-    # Call Claude API
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=300,
-        system=SYSTEM_PROMPT,
-        messages=conversation_history[sender]
-    )
-
-    reply = response.content[0].text.strip()
-
-    # Save assistant reply to history
-    conversation_history[sender].append({
-        "role": "assistant",
-        "content": reply
-    })
+    # Send message to Gemini
+    response = chat.send_message(incoming_msg)
+    reply = response.text.strip()
 
     # Send reply back via Twilio
     twilio_resp = MessagingResponse()
@@ -69,7 +53,7 @@ def webhook():
 
 @app.route("/", methods=["GET"])
 def home():
-    return "✅ WhatsApp bot is running!"
+    return "✅ WhatsApp bot is running with Gemini!"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
